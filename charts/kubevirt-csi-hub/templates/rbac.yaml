@@ -1,0 +1,65 @@
+{{- if .Values.rbac.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubevirt-csi
+  namespace: {{ .Release.Namespace }}
+---
+# What the controller does in the namespace of the tenant's VMs: make DataVolumes and
+# hotplug them into the VMs (VM-level addvolume, which persists in the VM spec).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubevirt-csi
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes"]
+    verbs: ["get", "create", "delete"]
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachineinstances", "virtualmachines"]
+    verbs: ["list", "get"]
+  - apiGroups: ["subresources.kubevirt.io"]
+    resources: ["virtualmachines/addvolume", "virtualmachines/removevolume", "virtualmachineinstances/removevolume"]
+    verbs: ["update"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubevirt-csi
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubevirt-csi
+subjects:
+  - kind: ServiceAccount
+    name: kubevirt-csi
+    namespace: {{ .Release.Namespace }}
+---
+# Named after the namespace: upstream's single binding names one namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Namespace }}-kubevirt-csi
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Namespace }}-kubevirt-csi
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Namespace }}-kubevirt-csi
+subjects:
+  - kind: ServiceAccount
+    name: kubevirt-csi
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -1,0 +1,191 @@
+name: image
+
+# A push to main publishes the image as dev. A version tag on the release branch of its
+# minor version (v0.1.0 on release-0.1) publishes the image under the tag, and latest
+# when it is the newest release, and the chart kubevirt-csi in the stable channel.
+# See PETASUS.md.
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# A run in progress is never cancelled: a release half published is finished by running
+# it again.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: quay.io/edgestack/kubevirt-csi-driver
+
+jobs:
+  check:
+    name: decide what to publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.decide.outputs.tag }}
+      publish: ${{ steps.decide.outputs.publish }}
+      newest: ${{ steps.decide.outputs.newest }}
+      release: ${{ steps.decide.outputs.release }}
+    env:
+      HAVE_SECRETS: ${{ secrets.QUAY_USER_NAME != '' && secrets.QUAY_PASSWORD != '' && secrets.MY_TOKEN != '' }}
+    steps:
+      - name: Check the secrets
+        run: |
+          if [ "$HAVE_SECRETS" != true ]; then
+            echo "the secrets QUAY_USER_NAME, QUAY_PASSWORD and MY_TOKEN are not all set for this repository"
+            exit 1
+          fi
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Decide
+        id: decide
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/main)
+              echo "tag=dev" >> "$GITHUB_OUTPUT"
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              echo "newest=false" >> "$GITHUB_OUTPUT"
+              # The tag must end up on the newest commit: a run for a commit that is no
+              # longer the head of main leaves it to the run of the one that is.
+              head="$(git ls-remote origin refs/heads/main | cut -f1)"
+              if [ "$head" = "$GITHUB_SHA" ]; then
+                echo "publish=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "publish=false" >> "$GITHUB_OUTPUT"
+                echo "main has moved on to ${head:-an unknown commit}; its run publishes dev"
+              fi
+              ;;
+            refs/tags/*)
+              if ! printf '%s\n' "$GITHUB_REF_NAME" |
+                grep -Eqx 'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?'; then
+                echo "$GITHUB_REF_NAME is not a release tag such as v0.1.0 or v0.1.0-rc.1"
+                exit 1
+              fi
+              # Every release of a minor version is cut from one branch, release-X.Y.
+              version="${GITHUB_REF_NAME#v}"
+              version="${version%%-*}"
+              branch="release-${version%.*}"
+              if [ -z "$(git ls-remote --heads origin "refs/heads/$branch")" ]; then
+                echo "$GITHUB_REF_NAME is cut from the branch $branch, which does not exist"
+                exit 1
+              fi
+              git fetch --quiet origin "refs/heads/$branch"
+              if ! git merge-base --is-ancestor HEAD FETCH_HEAD; then
+                echo "$GITHUB_REF_NAME is on a commit that the branch $branch does not hold"
+                exit 1
+              fi
+              echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+              echo "release=true" >> "$GITHUB_OUTPUT"
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+              newest="$(git ls-remote --tags --refs origin 'v*' | sed 's|.*refs/tags/||' |
+                { grep -Ex 'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)' || true; } |
+                sort -V | tail -n 1)"
+              if [ "$newest" = "$GITHUB_REF_NAME" ]; then
+                echo "newest=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "newest=false" >> "$GITHUB_OUTPUT"
+              fi
+              ;;
+            *)
+              echo "nothing is published from $GITHUB_REF"
+              exit 1
+              ;;
+          esac
+
+  amd64:
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    uses: ./.github/workflows/image-build.yml
+    with:
+      platform: linux/amd64
+      runner: ubuntu-24.04
+    secrets: inherit
+
+  arm64:
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    uses: ./.github/workflows/image-build.yml
+    with:
+      platform: linux/arm64
+      runner: ubuntu-24.04-arm
+    secrets: inherit
+
+  manifest:
+    name: tag the image
+    needs: [check, amd64, arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
+      RELEASE: ${{ needs.check.outputs.release }}
+      NEWEST: ${{ needs.check.outputs.newest }}
+      AMD64: ${{ needs.amd64.outputs.digest }}
+      ARM64: ${{ needs.arm64.outputs.digest }}
+    steps:
+      - name: Log in to quay.io
+        env:
+          QUAY_USER_NAME: ${{ secrets.QUAY_USER_NAME }}
+          QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
+        run: printf '%s' "$QUAY_PASSWORD" | docker login quay.io --username "$QUAY_USER_NAME" --password-stdin
+
+      # A release tag is never moved to other contents once it is out: a rerun keeps
+      # what an earlier run published. dev moves with every push.
+      - name: Tag the platforms
+        run: |
+          if [ "$RELEASE" = true ] && docker buildx imagetools inspect "$IMAGE:$TAG" >/dev/null 2>&1; then
+            echo "$IMAGE:$TAG is already published"
+          else
+            docker buildx imagetools create --tag "$IMAGE:$TAG" "$IMAGE@$AMD64" "$IMAGE@$ARM64"
+          fi
+          docker buildx imagetools inspect "$IMAGE:$TAG"
+
+      # The sites pull the image without credentials, which a repository the first
+      # push created may not allow. A release stops here until it is public.
+      - name: Check that the image can be pulled without credentials
+        if: env.RELEASE == 'true'
+        run: |
+          url="https://${IMAGE%%/*}/v2/${IMAGE#*/}/manifests/$TAG"
+          accept="application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json"
+          status="$(curl -sS -o /dev/null -w '%{http_code}' --retry 3 -H "Accept: $accept" "$url" || true)"
+          if [ "$status" != 200 ]; then
+            echo "$IMAGE:$TAG cannot be pulled without credentials (HTTP $status); make the repository public and run this workflow again"
+            exit 1
+          fi
+
+      - name: Point latest at the release
+        if: env.RELEASE == 'true' && env.NEWEST == 'true'
+        run: docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE:$TAG"
+
+      - name: Log out of quay.io
+        if: always()
+        run: docker logout quay.io
+
+  chart:
+    name: publish the chart
+    needs: [check, manifest]
+    if: needs.check.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Publish the release to the stable channel
+        uses: petasus-ai/.github/actions/publish-chart@f66755de01cb62bb6f294e1f0303e54b45c323df
+        with:
+          chart: charts/kubevirt-csi
+          channel: stable
+          version: ${{ needs.check.outputs.tag }}
+          token: ${{ secrets.MY_TOKEN }}

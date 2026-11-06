@@ -1,0 +1,12 @@
+apiVersion: v2
+name: kubevirt-csi-hub
+description: >-
+  The controller of the KubeVirt CSI driver for one tenant cluster, installed in the
+  infrastructure cluster in the namespace of the tenant's VMs (split mode): it makes the
+  DataVolumes and hotplugs them into the VMs. Not published; it is what a manual install
+  uses and the reference for the objects petasus-resource-manager makes per cluster.
+type: application
+version: 0.0.0-dev
+appVersion: dev
+kubeVersion: ">=1.24.0-0"
+home: https://github.com/petasus-ai/kubevirt-csi-driver

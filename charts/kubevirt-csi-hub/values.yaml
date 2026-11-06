@@ -1,0 +1,58 @@
+global:
+  # Put in front of every image below, for a registry that mirrors images under
+  # their original host name.
+  imageRegistry: ""
+
+# The tenant cluster: the name of its CAPI Cluster, in the release namespace. Required.
+clusterName: ""
+
+# The Secret holding the tenant cluster's kubeconfig under the key "value".
+# Defaults to <clusterName>-kubeconfig, the one CAPI writes.
+tenantKubeconfigSecret: ""
+
+# The only StorageClass of this cluster the controller makes DataVolumes in. A tenant
+# StorageClass naming another one is refused. Required. Use a class every node of this
+# cluster can attach (shared storage), not a node-local one such as hostpath-csi.
+infraStorageClassName: ""
+
+# Hot-unplug from a VMI a volume missing from its VM's spec. Needs the KubeVirt
+# HotplugVolumes feature gate; leave it false with DeclarativeHotplugVolumes, which
+# KubeVirt 1.9 has on by default.
+vmiHotplugFallback: false
+
+image:
+  repository: quay.io/edgestack/kubevirt-csi-driver
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+csiProvisioner:
+  image: registry.k8s.io/sig-storage/csi-provisioner:v6.0.2
+csiAttacher:
+  image: registry.k8s.io/sig-storage/csi-attacher:v4.10.0
+csiResizer:
+  image: registry.k8s.io/sig-storage/csi-resizer:v1.13.1
+livenessProbe:
+  image: registry.k8s.io/sig-storage/livenessprobe:v2.19.0
+
+logLevel: 3
+
+rbac:
+  # The ServiceAccount, Role and RoleBinding are shared by the controllers of every
+  # tenant cluster in a namespace, and so are the ClusterRole and ClusterRoleBinding
+  # named after the namespace: only the first release in a namespace creates them.
+  create: true
+
+nodeSelector: {}
+tolerations: []
+priorityClassName: system-cluster-critical
+
+resources:
+  driver:
+    requests:
+      cpu: 10m
+      memory: 50Mi
+  sidecar:
+    requests:
+      cpu: 10m
+      memory: 20Mi

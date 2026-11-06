@@ -1,0 +1,23 @@
+{{- if .Values.storageClass.create }}
+{{- if not (has .Values.storageClass.fsType (list "ext4" "xfs")) }}
+{{- fail (printf "storageClass.fsType must be ext4 or xfs, not %q" .Values.storageClass.fsType) }}
+{{- end }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClass.name }}
+  labels:
+    {{- include "kubevirt-csi.labels" . | nindent 4 }}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: {{ .Values.storageClass.isDefaultClass | toString | quote }}
+provisioner: csi.kubevirt.io
+parameters:
+  infraStorageClassName: {{ required "storageClass.infraStorageClassName is required" .Values.storageClass.infraStorageClassName | quote }}
+  bus: {{ .Values.storageClass.bus | quote }}
+  csi.storage.k8s.io/fstype: {{ .Values.storageClass.fsType | quote }}
+reclaimPolicy: {{ .Values.storageClass.reclaimPolicy }}
+allowVolumeExpansion: {{ .Values.storageClass.allowVolumeExpansion }}
+# The driver reports no topology and does not support WaitForFirstConsumer
+# (kubevirt/csi-driver#116).
+volumeBindingMode: Immediate
+{{- end }}

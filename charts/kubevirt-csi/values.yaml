@@ -1,0 +1,56 @@
+global:
+  # Put in front of every image below, for a registry that mirrors images under
+  # their original host name, e.g. edgestack.harbor.core:32443/library.
+  imageRegistry: ""
+
+image:
+  repository: quay.io/edgestack/kubevirt-csi-driver
+  # Defaults to the chart's appVersion: dev on the dev channel, vX.Y.Z in a release.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# The sidecar versions csi-driver-nfs 4.13 uses as well, so that a site mirroring both
+# keeps one copy.
+nodeDriverRegistrar:
+  image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
+
+livenessProbe:
+  image: registry.k8s.io/sig-storage/livenessprobe:v2.19.0
+
+node:
+  logLevel: 3
+  nodeSelector: {}
+  # Every node, the control plane and tainted GPU nodes included, can be given a volume.
+  tolerations:
+    - operator: Exists
+  priorityClassName: system-node-critical
+  resources:
+    driver:
+      requests:
+        cpu: 10m
+        memory: 50Mi
+    nodeDriverRegistrar:
+      requests:
+        cpu: 5m
+        memory: 20Mi
+    livenessProbe:
+      requests:
+        cpu: 5m
+        memory: 20Mi
+
+storageClass:
+  create: true
+  name: kubevirt-csi
+  isDefaultClass: false
+  # The StorageClass of the infrastructure cluster the DataVolumes are made in. Required.
+  # It must also be the one the controller allows (kubevirt-csi-hub infraStorageClassName).
+  # The parameters of a StorageClass cannot change, so changing it means deleting the
+  # StorageClass first.
+  infraStorageClassName: ""
+  # scsi: with virtio the disk serial the node plugin looks for is cut short
+  # (kubevirt/csi-driver#368), and every disk takes a PCIe port of the VM.
+  bus: scsi
+  # ext4 or xfs; the node plugin formats with no other.
+  fsType: ext4
+  reclaimPolicy: Delete
+  allowVolumeExpansion: true

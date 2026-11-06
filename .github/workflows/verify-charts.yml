@@ -1,0 +1,30 @@
+name: verify-charts
+
+# The Go code is upstream's and is verified upstream (Prow); this checks what Petasus
+# adds: the charts.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'charts/**'
+      - 'hack/petasus/**'
+  pull_request:
+    paths:
+      - 'charts/**'
+      - 'hack/petasus/**'
+
+permissions:
+  contents: read
+
+jobs:
+  charts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.18.4
+      - run: ./hack/petasus/verify-charts.sh

@@ -1,0 +1,71 @@
+name: image-build
+
+# Builds the image for one platform on a runner of that platform and pushes it by
+# digest only; image.yml joins the platforms under a tag. The Dockerfile installs
+# packages in its final stage, so a platform is built natively, never under emulation.
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: linux/amd64 or linux/arm64
+        required: true
+        type: string
+      runner:
+        description: A runner of that platform.
+        required: true
+        type: string
+    outputs:
+      digest:
+        description: The digest of the pushed image.
+        value: ${{ jobs.build.outputs.digest }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 40
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    env:
+      IMAGE: quay.io/edgestack/kubevirt-csi-driver
+      PLATFORM: ${{ inputs.platform }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Log in to quay.io
+        env:
+          QUAY_USER_NAME: ${{ secrets.QUAY_USER_NAME }}
+          QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
+        run: printf '%s' "$QUAY_PASSWORD" | docker login quay.io --username "$QUAY_USER_NAME" --password-stdin
+
+      # Pushing by digest needs the docker-container driver.
+      - name: Create a builder
+        run: docker buildx create --use
+
+      # No provenance or SBOM: they add index entries for an unknown platform, which
+      # tools that mirror an image platform by platform cannot copy. The labels tell
+      # which commit of this repository the image was built from.
+      - name: Build and push by digest
+        id: build
+        run: |
+          docker buildx build --platform "$PLATFORM" \
+            --build-arg git_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" \
+            --build-arg git_sha="$GITHUB_SHA" \
+            --provenance=false --sbom=false \
+            --output "type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file "$RUNNER_TEMP/metadata.json" .
+          digest="$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/metadata.json")"
+          case "$digest" in
+            sha256:*) ;;
+            *) echo "the build reported no digest"; exit 1 ;;
+          esac
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Log out of quay.io
+        if: always()
+        run: docker logout quay.io

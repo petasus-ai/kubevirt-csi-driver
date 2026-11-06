@@ -1,0 +1,59 @@
+{{- /*
+Only the node plugin runs in this cluster. The controller's sidecars reach it with the
+kubeconfig the controller is given in the infrastructure cluster, so no account is made
+for them here.
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubevirt-csi-node
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubevirt-csi.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubevirt-csi-node
+  labels:
+    {{- include "kubevirt-csi.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "update", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["csinodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments/status"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubevirt-csi-node
+  labels:
+    {{- include "kubevirt-csi.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: kubevirt-csi-node
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: kubevirt-csi-node
+  apiGroup: rbac.authorization.k8s.io

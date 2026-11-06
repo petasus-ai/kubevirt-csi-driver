@@ -1,0 +1,150 @@
+{{- $cluster := include "kubevirt-csi-hub.clusterName" . -}}
+{{- $sc := required "infraStorageClassName is required" .Values.infraStorageClassName -}}
+{{- $secret := default (printf "%s-kubeconfig" $cluster) .Values.tenantKubeconfigSecret -}}
+{{- $sidecarSecurity := dict "allowPrivilegeEscalation" false "readOnlyRootFilesystem" true "capabilities" (dict "drop" (list "ALL")) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $cluster }}-kubevirt-csi-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubevirt-csi-hub.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubevirt-csi-controller
+      cluster.x-k8s.io/cluster-name: {{ $cluster }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kubevirt-csi-controller
+        cluster.x-k8s.io/cluster-name: {{ $cluster }}
+    spec:
+      enableServiceLinks: false
+      serviceAccountName: kubevirt-csi
+      priorityClassName: {{ .Values.priorityClassName }}
+      # The CSI sidecar images run as root unless told otherwise.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: csi-driver
+          image: {{ include "kubevirt-csi-hub.image" (dict "ref" (printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag)) "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--endpoint=unix:///var/lib/csi/sockets/pluginproxy/csi.sock"
+            - "--infra-cluster-namespace={{ .Release.Namespace }}"
+            - "--infra-cluster-labels={{ include "kubevirt-csi-hub.infraClusterLabels" . }}"
+            - "--tenant-cluster-kubeconfig=/var/run/secrets/tenantcluster/value"
+            - "--run-node-service=false"
+            - "--run-controller-service=true"
+            - "--enable-vmi-hotplug-fallback={{ .Values.vmiHotplugFallback }}"
+            - "--v={{ .Values.logLevel }}"
+          env:
+            # Unset, the driver allows every StorageClass of this cluster.
+            - name: INFRA_STORAGE_CLASS_ENFORCEMENT
+              value: |
+                allowAll: false
+                allowDefault: false
+                allowList:
+                  - {{ $sc | quote }}
+          ports:
+            - name: healthz
+              containerPort: 10301
+              protocol: TCP
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /var/lib/csi/sockets/pluginproxy/
+            - name: tenantcluster
+              mountPath: /var/run/secrets/tenantcluster
+          resources:
+            {{- toYaml .Values.resources.driver | nindent 12 }}
+          securityContext:
+            {{- toYaml $sidecarSecurity | nindent 12 }}
+        - name: csi-provisioner
+          image: {{ include "kubevirt-csi-hub.image" (dict "ref" .Values.csiProvisioner.image "global" .Values.global) }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--csi-address=/var/lib/csi/sockets/pluginproxy/csi.sock"
+            - "--default-fstype=ext4"
+            - "--kubeconfig=/var/run/secrets/tenantcluster/value"
+            - "--timeout=3m"
+            - "--retry-interval-max=1m"
+            - "--v={{ .Values.logLevel }}"
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /var/lib/csi/sockets/pluginproxy/
+            - name: tenantcluster
+              mountPath: /var/run/secrets/tenantcluster
+          resources:
+            {{- toYaml .Values.resources.sidecar | nindent 12 }}
+          securityContext:
+            {{- toYaml $sidecarSecurity | nindent 12 }}
+        - name: csi-attacher
+          image: {{ include "kubevirt-csi-hub.image" (dict "ref" .Values.csiAttacher.image "global" .Values.global) }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--csi-address=/var/lib/csi/sockets/pluginproxy/csi.sock"
+            - "--kubeconfig=/var/run/secrets/tenantcluster/value"
+            - "--timeout=3m"
+            - "--retry-interval-max=1m"
+            - "--v={{ .Values.logLevel }}"
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /var/lib/csi/sockets/pluginproxy/
+            - name: tenantcluster
+              mountPath: /var/run/secrets/tenantcluster
+          resources:
+            {{- toYaml .Values.resources.sidecar | nindent 12 }}
+          securityContext:
+            {{- toYaml $sidecarSecurity | nindent 12 }}
+        - name: csi-resizer
+          image: {{ include "kubevirt-csi-hub.image" (dict "ref" .Values.csiResizer.image "global" .Values.global) }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--csi-address=/var/lib/csi/sockets/pluginproxy/csi.sock"
+            - "--kubeconfig=/var/run/secrets/tenantcluster/value"
+            - "--timeout=3m"
+            - "--handle-volume-inuse-error=false"
+            - "--v={{ .Values.logLevel }}"
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /var/lib/csi/sockets/pluginproxy/
+            - name: tenantcluster
+              mountPath: /var/run/secrets/tenantcluster
+          resources:
+            {{- toYaml .Values.resources.sidecar | nindent 12 }}
+          securityContext:
+            {{- toYaml $sidecarSecurity | nindent 12 }}
+        - name: csi-liveness-probe
+          image: {{ include "kubevirt-csi-hub.image" (dict "ref" .Values.livenessProbe.image "global" .Values.global) }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--csi-address=/var/lib/csi/sockets/pluginproxy/csi.sock"
+            - "--probe-timeout=3s"
+            - "--health-port=10301"
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /var/lib/csi/sockets/pluginproxy/
+          resources:
+            {{- toYaml .Values.resources.sidecar | nindent 12 }}
+          securityContext:
+            {{- toYaml $sidecarSecurity | nindent 12 }}
+      volumes:
+        - name: socket-dir
+          emptyDir: {}
+        - name: tenantcluster
+          secret:
+            secretName: {{ $secret }}

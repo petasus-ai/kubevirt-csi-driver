@@ -1,0 +1,33 @@
+name: chart-dev
+
+# Publishes the chart kubevirt-csi to the dev channel of petasus-ai/edgestack-helm
+# (0.0.0-dev, image tag dev) when a push to main changes it. Releases publish their own
+# version from image.yml.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'charts/kubevirt-csi/**'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chart-dev
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Publish 0.0.0-dev to the dev channel
+        uses: petasus-ai/.github/actions/publish-chart@f66755de01cb62bb6f294e1f0303e54b45c323df
+        with:
+          chart: charts/kubevirt-csi
+          channel: dev
+          token: ${{ secrets.MY_TOKEN }}
